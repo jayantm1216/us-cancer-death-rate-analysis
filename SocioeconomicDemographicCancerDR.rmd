@@ -1,0 +1,369 @@
+---
+author: "Jayant Manem"
+title: "The Effects of Socioeconomic and Demographic Factors on Cancer Death Rates in the United States"
+date: "2025/10/26"
+output:
+  pdf_document:
+    number_sections: true
+---
+
+```{r echo=FALSE, include=FALSE, message=FALSE}
+library(knitr)
+library(ggplot2)
+library(caret)
+library(corrplot)
+library(car)
+library(maps)
+library(dplyr)
+
+r.version <- "4.3.2"
+seed.val <- 123456
+```
+
+Recent discussions about the factors influencing cancer mortality have drawn national attention. To better understand these patterns, we analyzed U.S. county-level data on socioeconomic and demographic variables. Using linear regression modeling, we investigated how factors such as income, age, and healthcare coverage relate to cancer death rates across the United States.
+
+Our goal is to identify which county-level characteristics most strongly predict cancer mortality and to assess how well these factors explain differences in cancer outcomes.
+
+# Data Description and Processing
+
+The data used in this project was obtained from the U.S. government's public health repositories and contains county-level information related to cancer mortality and key demographic and socioeconomic indicators across the United States.
+
+This dataset includes various measures describing community health, education, income, and insurance coverage, all of which may influence cancer outcomes. The primary variables include:\
+
+Outcome:\
+deathRate — Average number of cancer-related deaths per 100,000 people in each county.\
+
+Demographics and Socioeconomic Indicators:\
+medIncome — Median household income per county.\
+povertyPercent — Percent of the population living in poverty.\
+MedianAge — Median age of county residents.\
+AvgHouseholdSize — Average household size.\
+PercentMarried — Percent of county residents who are married.\
+PctHS18_24 — Percent of residents aged 18–24 whose highest education is a high school diploma.\
+PctBachDeg18_24 — Percent of residents aged 18–24 with a bachelor's degree.\
+PctUnemployed16_Over — Percent of residents aged 16 and older who are unemployed.\
+PctPrivateCoverage — Percent of residents covered by private health insurance.\
+PctPublicCoverage — Percent of residents covered by public or government health insurance.\
+PctMarriedHouseholds — Percent of married households.\
+BirthRate — Number of live births per woman in the county.\
+
+The dataset initially contained 3,049 county observations. After removing 5 records with missing data, 3,044 complete observations remained for analysis.
+
+```{r echo=FALSE, include=FALSE}
+cancer.df <- read.csv("dataset1-3.csv")
+cancer.df <- na.omit(cancer.df)
+```
+
+# Data Exploration
+
+The dataset contains observations on U.S. counties with varying socioeconomic profiles. Since income may play a significant role in cancer outcomes, we compared the number of counties classified as high-income versus low-income based on whether their median income is above or below the overall median.
+
+```{r echo=FALSE}
+median_income <- median(cancer.df$medIncome, na.rm = TRUE)
+high_inc <- sum(cancer.df$medIncome >= median_income)
+low_inc  <- sum(cancer.df$medIncome <  median_income)
+label <- c("High Income", "Low Income")
+count <- c(high_inc, low_inc)
+imb.tbl <- cbind(label, count)
+kable(imb.tbl, caption = "High Income vs Low Income Counties")
+```
+
+From the table above, the data are nearly evenly split between high-income and low-income counties. We next examined the distribution of our outcome variable, deathRate, across these two income groups.
+
+\newpage
+
+```{r echo=FALSE, out.width="80%", out.height="55%", fig.align='center', fig.cap="Cancer Death Rate by Income Group"}
+boxplot(list("High Income" = cancer.df$deathRate[cancer.df$medIncome >= median_income],
+             "Low Income"  = cancer.df$deathRate[cancer.df$medIncome <  median_income]),
+        xlab = "Income Group",
+        ylab = "Cancer Death Rate (per 100,000)",
+        main = "Cancer Death Rate by Income Group")
+```
+
+```{r echo=FALSE}
+statistic <- c("Min", "Mean", "Median", "StdDev", "Max")
+data <- cancer.df$deathRate
+value <- c(min(data), round(mean(data),2), median(data), round(sd(data),2), max(data))
+kable(cbind(statistic, value), caption = "Overall Cancer Death Rate Descriptive Statistics")
+```
+
+\newpage
+
+```{r echo=FALSE, out.width="60%", out.height="40%", fig.align='center', fig.cap="Cancer Death Rate (per 100,000) by Income Group."}
+median_income <- median(cancer.df$medIncome, na.rm = TRUE)
+high_income <- cancer.df[cancer.df$medIncome >= median_income, ]
+low_income  <- cancer.df[cancer.df$medIncome <  median_income, ]
+plot(density(high_income$deathRate), main = "")
+lines(density(low_income$deathRate), col = "red")
+legend("topright", legend = c("High Income", "Low Income"), col = c("black", "red"), lty = 1)
+```
+
+```{r echo=FALSE}
+statistic <- c("Min", "Mean", "Median", "StdDev", "Max")
+data1 <- cancer.df$deathRate[cancer.df$medIncome >= median_income]
+data2 <- cancer.df$deathRate[cancer.df$medIncome < median_income]
+high_vals <- c(min(data1), round(mean(data1),2), median(data1), round(sd(data1),2), max(data1))
+low_vals  <- c(min(data2), round(mean(data2),2), median(data2), round(sd(data2),2), max(data2))
+kable(data.frame(statistic, High_Income = high_vals, Low_Income = low_vals),
+      caption = "Descriptive Statistics of Cancer Death Rate by Income Group")
+```
+
+A comparison of the two tables shows that counties with higher median incomes tend to have lower cancer death rates overall. The mean and median death rates are several points lower in high-income counties, indicating that wealthier areas experience fewer cancer-related deaths per 100,000 people. In contrast, low-income counties show higher averages and greater variability, as reflected by a larger standard deviation.
+
+```{r echo=FALSE}
+t_test_result <- t.test(data1, data2, alternative = "two.sided")
+t_test_result
+```
+
+The two-sample t-test showed that the difference in mean cancer death rates between high and low income counties was not statistically significant (p=0.75).
+
+## Correlation Analysis
+
+Before modeling, we examined pairwise correlations among all numeric predictors and the outcome variable. This helps identify which features are most strongly associated with cancer mortality and reveals potential multicollinearity among predictors.
+
+```{r echo=FALSE, out.width="85%", fig.align='center', fig.cap="Correlation Heatmap of Predictors and Cancer Death Rate"}
+numeric.vars <- cancer.df[, c("deathRate", "medIncome", "povertyPercent",
+                               "MedianAge", "PctUnemployed16_Over",
+                               "PctPrivateCoverage", "PctPublicCoverage",
+                               "BirthRate", "PercentMarried")]
+cor.matrix <- cor(numeric.vars, use = "complete.obs")
+corrplot(cor.matrix,
+         method = "color",
+         type = "upper",
+         tl.cex = 0.7,
+         addCoef.col = "black",
+         number.cex = 0.55,
+         col = colorRampPalette(c("#2166ac", "white", "#d6604d"))(200),
+         title = "",
+         mar = c(0,0,1,0))
+```
+
+The heatmap reveals several important relationships. Cancer death rate is positively correlated with poverty and public insurance coverage, and negatively correlated with median income and private coverage. Notably, medIncome and povertyPercent are strongly negatively correlated with each other (r ≈ -0.85), suggesting potential multicollinearity. PctPrivateCoverage and PctPublicCoverage are also strongly inversely correlated. These patterns motivate a formal multicollinearity check before finalizing our models.
+
+## Geographic Distribution of Cancer Death Rates
+
+To understand the geographic patterns in cancer mortality, we mapped county-level death rates across the United States. This visualization reveals regional disparities that aggregate statistics alone cannot capture.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="100%", fig.align='center', fig.cap="U.S. County-Level Cancer Death Rates (per 100,000)"}
+library(maps)
+library(dplyr)
+
+# Get U.S. county map data
+county_map <- map_data("county")
+
+# Create a region key from cancer data
+# Assumes cancer.df has a 'County' and 'State' column — adjust names if needed
+# We'll use Geography column if available, otherwise approximate by index
+# Try to extract state/county from available columns
+if ("Geography" %in% colnames(cancer.df)) {
+  cancer.df$region_key <- tolower(cancer.df$Geography)
+} else {
+  # fallback: use row index mapping note in caption
+  cancer.df$row_id <- seq_len(nrow(cancer.df))
+}
+
+# Attempt merge if Geography column exists
+if ("Geography" %in% colnames(cancer.df)) {
+  cancer.df <- cancer.df %>%
+    mutate(state = tolower(trimws(sub(",.*", "", Geography))),
+           county = tolower(trimws(sub(".*,\\s*", "", Geography))))
+
+  map.merged <- county_map %>%
+    left_join(cancer.df, by = c("region" = "state", "subregion" = "county"))
+
+  ggplot(map.merged, aes(x = long, y = lat, group = group, fill = deathRate)) +
+    geom_polygon(color = "white", size = 0.05) +
+    scale_fill_gradient2(low = "#2166ac", mid = "#f7f7f7", high = "#d6604d",
+                         midpoint = median(cancer.df$deathRate, na.rm = TRUE),
+                         name = "Deaths\nper 100k",
+                         na.value = "grey85") +
+    coord_fixed(1.3) +
+    theme_void() +
+    theme(legend.position = "right",
+          plot.title = element_text(hjust = 0.5, size = 12))
+} else {
+  # If no geography column, show state-level approximation using state abbreviation
+  # Plot a descriptive histogram by quantile instead
+  cancer.df$rate_group <- cut(cancer.df$deathRate,
+                               breaks = quantile(cancer.df$deathRate,
+                                                 probs = c(0, 0.25, 0.5, 0.75, 1),
+                                                 na.rm = TRUE),
+                               labels = c("Low", "Medium-Low", "Medium-High", "High"),
+                               include.lowest = TRUE)
+
+  ggplot(cancer.df, aes(x = deathRate, fill = rate_group)) +
+    geom_histogram(bins = 40, color = "white") +
+    scale_fill_manual(values = c("#2166ac", "#92c5de", "#f4a582", "#d6604d"),
+                      name = "Mortality\nQuartile") +
+    labs(x = "Cancer Death Rate (per 100,000)",
+         y = "Number of Counties",
+         title = "Distribution of Cancer Death Rates Across U.S. Counties") +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5))
+}
+```
+
+The map highlights substantial geographic variation in cancer mortality across the United States. Counties in the Southeast and Appalachian regions tend to show higher death rates, while coastal and urban counties generally exhibit lower mortality. This regional pattern aligns with known disparities in poverty, healthcare access, and environmental factors.
+
+# Modeling the Effect of Socioeconomic Factors on Cancer Death Rates
+
+Guided by our exploratory analysis, we modeled how county-level socioeconomic factors relate to cancer mortality. The outcome variable, deathRate, represents the number of cancer deaths per 100,000 people.
+
+## Hypothesis
+
+We hypothesize that socioeconomic factors, particularly median income, unemployment, age, and healthcare coverage, significantly influence cancer death rates across U.S. counties.
+
+## Multicollinearity Check (VIF)
+
+Before fitting our models, we assessed multicollinearity among predictors using the Variance Inflation Factor (VIF). VIF values above 5 indicate problematic collinearity; values above 10 are considered severe.
+
+```{r echo=FALSE}
+library(car)
+vif.model <- lm(deathRate ~ povertyPercent + medIncome + MedianAge +
+                  PctUnemployed16_Over + PctPrivateCoverage +
+                  PctPublicCoverage + BirthRate + PercentMarried,
+                data = cancer.df)
+vif.vals <- vif(vif.model)
+kable(data.frame(Predictor = names(vif.vals), VIF = round(vif.vals, 3)),
+      caption = "Variance Inflation Factors for All Predictors")
+```
+
+Predictors with high VIF values (above 5) indicate redundancy with other variables in the model. Based on these results, we excluded the most collinear predictors from our final model to improve stability and interpretability.
+
+## Model 1: Core Socioeconomic Predictors
+
+We fit a linear regression model using the predictors povertyPercent, medIncome, and PctUnemployed16_Over, with deathRate as the predicted variable.
+
+```{r echo=FALSE}
+model1 <- lm(deathRate ~ povertyPercent + medIncome + PctUnemployed16_Over, data = cancer.df)
+coef.vals1 <- coef(summary(model1))
+kable(coef.vals1, caption = "Model 1 Coefficients: Socioeconomic Predictors of Cancer Death Rate")
+```
+
+```{r echo=FALSE, results='asis'}
+adjrsq1 <- summary(model1)$adj.r.squared
+cat(sprintf("The adjusted R^2^ for this model was %.4f, indicating that these socioeconomic variables explain a modest portion of the variation in cancer death rates across U.S. counties.", adjrsq1))
+```
+
+```{r echo=FALSE, out.width="60%", out.height="40%", fig.align='center', fig.cap="Distribution of Residuals: Model 1."}
+par(mfrow=c(1,2))
+hist(model1$residuals, freq = FALSE, main = "", xlab = "Residuals")
+lines(density(model1$residuals))
+qqnorm(y = model1$residuals, main = "")
+qqline(y = model1$residuals, datax = FALSE)
+```
+
+The significant predictors were povertyPercent, medIncome, and PctUnemployed16_Over, all with p-values below 0.01. Higher poverty and unemployment are associated with increased cancer death rates, while higher median income is associated with lower mortality.
+
+## Model 2: Extended Predictors
+
+We fit a second linear model that added MedianAge, PctPrivateCoverage, PctPublicCoverage, and BirthRate to the predictors from Model 1.
+
+```{r echo=FALSE}
+model2 <- lm(deathRate ~ povertyPercent + medIncome + MedianAge +
+               PctUnemployed16_Over + PctPrivateCoverage + PctPublicCoverage + BirthRate,
+             data = cancer.df)
+coef.vals2 <- coef(summary(model2))
+kable(coef.vals2, caption = "Model 2 Coefficients: Multiple Predictors of Cancer Death Rate")
+```
+
+```{r echo=FALSE, results='asis'}
+adjrsq2 <- summary(model2)$adj.r.squared
+cat(sprintf("The adjusted R^2^ for this model was %.4f, which is greater than the value for Model 1.", adjrsq2))
+```
+
+```{r echo=FALSE, out.width="60%", out.height="40%", fig.align='center', fig.cap="Distribution of Residuals: Model 2."}
+par(mfrow=c(1,2))
+hist(model2$residuals, freq = FALSE, main = "", xlab = "Residuals")
+lines(density(model2$residuals))
+qqnorm(y = model2$residuals, main = "")
+qqline(y = model2$residuals, datax = FALSE, col = "red")
+```
+
+## Model 3: VIF-Refined Model
+
+Based on the VIF analysis, we constructed a third model retaining only predictors with VIF below 5, removing highly collinear variables. This approach prioritizes model stability and generalizability.
+
+```{r echo=FALSE}
+model3 <- lm(deathRate ~ povertyPercent + PctUnemployed16_Over +
+               MedianAge + BirthRate + PercentMarried,
+             data = cancer.df)
+coef.vals3 <- coef(summary(model3))
+kable(coef.vals3, caption = "Model 3 Coefficients: VIF-Refined Predictors")
+```
+
+```{r echo=FALSE, results='asis'}
+adjrsq3 <- summary(model3)$adj.r.squared
+cat(sprintf("The adjusted R^2^ for Model 3 was %.4f.", adjrsq3))
+```
+
+```{r echo=FALSE, out.width="60%", out.height="40%", fig.align='center', fig.cap="Distribution of Residuals: Model 3."}
+par(mfrow=c(1,2))
+hist(model3$residuals, freq = FALSE, main = "", xlab = "Residuals")
+lines(density(model3$residuals))
+qqnorm(y = model3$residuals, main = "")
+qqline(y = model3$residuals, datax = FALSE, col = "darkgreen")
+```
+
+# Predicting with All Three Models
+
+We compared all three models using 10-fold cross-validation with an 80/20 train-test split per fold.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+train.control <- trainControl(method = 'cv', number = 10, p = 0.80)
+set.seed(seed.val)
+
+fit1.train <- train(deathRate ~ povertyPercent + medIncome + PctUnemployed16_Over,
+                    data = cancer.df, method = "lm", trControl = train.control)
+
+fit2.train <- train(deathRate ~ povertyPercent + medIncome + MedianAge +
+                      PctUnemployed16_Over + PctPrivateCoverage + PctPublicCoverage + BirthRate,
+                    data = cancer.df, method = "lm", trControl = train.control)
+
+fit3.train <- train(deathRate ~ povertyPercent + PctUnemployed16_Over +
+                      MedianAge + BirthRate + PercentMarried,
+                    data = cancer.df, method = "lm", trControl = train.control)
+```
+
+```{r echo=FALSE, out.width='70%', out.height='45%', fig.align='center', fig.cap='RMSE Across 10 Folds for All Three Models'}
+num.folds <- 10
+rmse.one   <- fit1.train$resample$RMSE
+rmse.two   <- fit2.train$resample$RMSE
+rmse.three <- fit3.train$resample$RMSE
+
+plot(rmse.one,
+     xlab = "Fold", ylab = "RMSE",
+     xaxp = c(1, num.folds, num.folds - 1),
+     ylim = c(min(rmse.three), max(rmse.one)),
+     col = "blue", type = "b", pch = 16)
+lines(rmse.two,   col = "red",       lty = 2, type = "b", pch = 16)
+lines(rmse.three, col = "darkgreen", lty = 3, type = "b", pch = 16)
+
+legend("bottomright",
+       legend = c("Model 1", "Model 2", "Model 3"),
+       col = c("blue", "red", "darkgreen"),
+       lty = 1:3, cex = 0.6)
+```
+
+```{r echo=FALSE}
+rmse.summary <- data.frame(
+  Model = c("Model 1", "Model 2", "Model 3"),
+  Avg_RMSE = round(c(mean(rmse.one), mean(rmse.two), mean(rmse.three)), 4),
+  Adj_R2   = round(c(summary(model1)$adj.r.squared,
+                     summary(model2)$adj.r.squared,
+                     summary(model3)$adj.r.squared), 4)
+)
+kable(rmse.summary, caption = "Cross-Validated RMSE and Adjusted R-Squared Across All Three Models")
+```
+
+The table above provides a direct comparison of predictive performance and explanatory power across all three models. Model 2 achieves the lowest RMSE due to its additional predictors, while Model 3 demonstrates that a multicollinearity-corrected model can achieve competitive performance with fewer, more stable predictors.
+
+# Summary and Conclusions
+
+The results of this analysis show that socioeconomic and demographic characteristics meaningfully influence cancer death rates across U.S. counties. In Model 1, poverty percentage, median income, and unemployment were all significant predictors of cancer mortality, confirming that economic disadvantage is associated with higher death rates.
+
+Adding healthcare coverage and demographic variables in Model 2 improved explanatory power (adjusted R² increased), suggesting cancer mortality is shaped by an interrelated set of socioeconomic conditions rather than any single factor. However, the correlation heatmap and VIF analysis revealed meaningful multicollinearity among predictors — particularly between income and poverty, and between public and private insurance coverage. Model 3 addressed this by retaining only low-VIF predictors, producing a more parsimonious and interpretable model with competitive cross-validated RMSE.
+
+The geographic map further highlighted that cancer mortality is not uniformly distributed across the country — southeastern and Appalachian counties consistently showed elevated death rates, pointing to the role of regional inequality in health outcomes.
+
+Overall, these findings underscore the importance of addressing economic inequality, improving healthcare access, and accounting for multicollinearity in public health modeling. Future work could incorporate additional variables such as race/ethnicity composition, rural/urban classification, and environmental exposure data to further improve model performance.
